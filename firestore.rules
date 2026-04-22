@@ -1,0 +1,12 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Dev / private tool: tighten before any public deploy (e.g. require Firebase Auth).
+    match /events/{eventId} {
+      allow read, write: if true;
+      match /guests/{guestId} {
+        allow read, write: if true;
+      }
+    }
+  }
+}
