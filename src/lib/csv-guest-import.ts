@@ -142,11 +142,24 @@ export function guessAmountColumnIndex(headers: string[]): number {
   return Math.min(1, Math.max(0, headers.length - 1));
 }
 
-/** WooCommerce orders export: "Total products" (often line rows, not ticket qty). */
+/** Match a user-typed export header to a CSV column index (exact or loose contains). */
+export function matchHeaderColumnIndex(headers: string[], userLabel: string): number | null {
+  const needle = userLabel.trim().toLowerCase();
+  if (!needle) return null;
+  const normalized = headers.map((h) => normHeader(h));
+  const exact = normalized.findIndex((h) => h === needle);
+  if (exact >= 0) return exact;
+  const partial = normalized.findIndex((h) => h.includes(needle) || needle.includes(h));
+  return partial >= 0 ? partial : null;
+}
+
+/** WooCommerce orders export: "Total products" / "Total items" (qty), etc. */
 export function guessTotalProductsColumnIndex(headers: string[]): number | null {
   const normalized = headers.map((h) => normHeader(h));
   const idx = normalized.findIndex((h) =>
-    /^total\s*products?$|items?\s*qty|line\s*items?|product\s*qty|^qty$|^quantity$/i.test(h),
+    /^total\s*products?$|^total\s*items?$|total\s*items?\s*qty|items?\s*qty|line\s*items?|product\s*qty|^qty$|^quantity$/i.test(
+      h,
+    ),
   );
   return idx >= 0 ? idx : null;
 }
@@ -249,7 +262,7 @@ export function previewWooCommerceOrdersCsv(params: {
         ticketTypeLabel: r.rawQty,
         unitPriceKr: unitPriceKr,
         tickets: null,
-        error: "Total products is 0.",
+        error: "Ticket / items quantity is 0.",
       });
       continue;
     }

@@ -2,16 +2,23 @@
 
 import { isFirebaseConfigured } from "@/lib/firebase";
 import {
-  guessAmountColumnIndex,
-  guessNameColumnIndex,
-  guessTotalProductsColumnIndex,
+  matchHeaderColumnIndex,
   parseCsvMatrix,
   previewWooCommerceOrdersCsv,
   validImportRows,
   type ImportPreviewRow,
 } from "@/lib/csv-guest-import";
 import { getDb } from "@/lib/firestore";
-import { collection, doc, onSnapshot, orderBy, query, serverTimestamp, writeBatch } from "firebase/firestore";
+import {
+  addDoc,
+  collection,
+  doc,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  writeBatch,
+} from "firebase/firestore";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -20,10 +27,37 @@ type Props = { eventId: string };
 
 type EventOption = { id: string; name: string };
 
+function TrashIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M3 6h18M8 6V4h8v2m2 0v14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V6h12ZM10 11v6M14 11v6"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+type EventTargetMode = "existing" | "new";
+
 export function SettingsCsvImport({ eventId }: Props) {
   const router = useRouter();
   const [importTargetId, setImportTargetId] = useState(() => eventId.trim());
+  const [eventTargetMode, setEventTargetMode] = useState<EventTargetMode>("existing");
+  const [newEventName, setNewEventName] = useState("");
   const [events, setEvents] = useState<EventOption[]>([]);
+  const [exportFieldsReady, setExportFieldsReady] = useState(false);
+  const [fileInputKey, setFileInputKey] = useState(0);
+
+  const [nameHeader, setNameHeader] = useState("Full Name (Billing)");
+  const [amountHeader, setAmountHeader] = useState("Order Total Amount");
+  const [itemsHeader, setItemsHeader] = useState("Total items");
+  const [useOrderTotal, setUseOrderTotal] = useState(true);
+  const [useTotalItems, setUseTotalItems] = useState(true);
+
   const [csvMatrix, setCsvMatrix] = useState<string[][] | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [nameCol, setNameCol] = useState(0);
@@ -54,57 +88,122 @@ export function SettingsCsvImport({ eventId }: Props) {
   }, []);
 
   useEffect(() => {
+    if (eventTargetMode !== "existing") return;
     if (importTargetId.trim() || events.length !== 1) return;
     const id = events[0]!.id;
     queueMicrotask(() => setImportTargetId(id));
-  }, [events, importTargetId]);
+  }, [events, importTargetId, eventTargetMode]);
+
+  useEffect(() => {
+    if (events.length > 0) return;
+    queueMicrotask(() => setEventTargetMode("new"));
+  }, [events.length]);
 
   const headers = csvMatrix?.[0] ?? [];
 
   const previewRows: ImportPreviewRow[] = useMemo(() => {
     if (!csvMatrix || csvMatrix.length < 2) return [];
-    const col = ticketsCol === "" ? null : ticketsCol;
+    const col = useTotalItems && ticketsCol !== "" ? ticketsCol : null;
     return previewWooCommerceOrdersCsv({
       matrix: csvMatrix,
       nameCol,
       amountCol,
       ticketsCol: col,
     });
-  }, [csvMatrix, nameCol, amountCol, ticketsCol]);
+  }, [csvMatrix, nameCol, amountCol, ticketsCol, useTotalItems]);
 
   const readyRows = useMemo(() => validImportRows(previewRows), [previewRows]);
 
-  const onFile = useCallback((file: File | null) => {
-    setParseError(null);
+  const confirmExportFields = useCallback(() => {
+    if (!useOrderTotal) {
+      setSubmitError("Order total is required for import. Turn the checkbox back on.");
+      return;
+    }
+    setSubmitError(null);
+    setExportFieldsReady(true);
+  }, [useOrderTotal]);
+
+  const resetExportFieldsStep = useCallback(() => {
+    setExportFieldsReady(false);
     setCsvMatrix(null);
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const text = typeof reader.result === "string" ? reader.result : "";
-      const matrix = parseCsvMatrix(text);
-      if (!matrix || matrix.length < 2) {
-        setParseError("Could not read CSV (need a header row and at least one data row).");
-        return;
-      }
-      setCsvMatrix(matrix);
-      const h = matrix[0] ?? [];
-      setNameCol(Math.min(guessNameColumnIndex(h), Math.max(0, h.length - 1)));
-      setAmountCol(Math.min(guessAmountColumnIndex(h), Math.max(0, h.length - 1)));
-      const guessedProducts = guessTotalProductsColumnIndex(h);
-      setTicketsCol(guessedProducts ?? "");
-    };
-    reader.onerror = () => setParseError("Failed to read file.");
-    reader.readAsText(file, "UTF-8");
+    setParseError(null);
+    setFileInputKey((k) => k + 1);
   }, []);
+
+  const onFile = useCallback(
+    (file: File | null) => {
+      setParseError(null);
+      setCsvMatrix(null);
+      setSubmitError(null);
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const text = typeof reader.result === "string" ? reader.result : "";
+        const matrix = parseCsvMatrix(text);
+        if (!matrix || matrix.length < 2) {
+          setParseError("Could not read CSV (need a header row and at least one data row).");
+          return;
+        }
+        const h = matrix[0] ?? [];
+
+        const nc = matchHeaderColumnIndex(h, nameHeader);
+        if (nc == null) {
+          setParseError(
+            `No column in the CSV matches "${nameHeader.trim()}". Edit the text to match your file’s header row exactly.`,
+          );
+          return;
+        }
+        if (!useOrderTotal) {
+          setParseError("Order total must be enabled.");
+          return;
+        }
+        const ac = matchHeaderColumnIndex(h, amountHeader);
+        if (ac == null) {
+          setParseError(
+            `No column matches "${amountHeader.trim()}". Edit the label to match your CSV header (e.g. Order Total Amount).`,
+          );
+          return;
+        }
+        let tc: number | null = null;
+        if (useTotalItems) {
+          tc = matchHeaderColumnIndex(h, itemsHeader);
+          if (tc == null) {
+            setParseError(
+              `No column matches "${itemsHeader.trim()}". Edit the label or turn off "Total items" to infer ticket counts from order totals only.`,
+            );
+            return;
+          }
+        }
+
+        setNameCol(nc);
+        setAmountCol(ac);
+        setTicketsCol(tc === null ? "" : tc);
+        setCsvMatrix(matrix);
+      };
+      reader.onerror = () => setParseError("Failed to read file.");
+      reader.readAsText(file, "UTF-8");
+    },
+    [nameHeader, amountHeader, itemsHeader, useOrderTotal, useTotalItems],
+  );
 
   const submit = useCallback(async () => {
     setSubmitError(null);
-    if (!importTargetId.trim()) {
-      setSubmitError("Select which event to import into (dropdown above).");
+    if (eventTargetMode === "new") {
+      const name = newEventName.trim();
+      if (!name) {
+        setSubmitError("Enter an event name for this import.");
+        return;
+      }
+    } else if (!importTargetId.trim()) {
+      setSubmitError("Select which existing event to import into.");
+      return;
+    }
+    if (!exportFieldsReady) {
+      setSubmitError('Use "Continue to upload CSV" first, then choose your file.');
       return;
     }
     if (!csvMatrix || csvMatrix.length < 2) {
-      setSubmitError("Choose a CSV file to import.");
+      setSubmitError("Choose a CSV file.");
       return;
     }
     if (readyRows.length === 0) {
@@ -119,12 +218,21 @@ export function SettingsCsvImport({ eventId }: Props) {
     setBusy(true);
     try {
       const db = getDb();
+      let targetEventId = importTargetId.trim();
+      if (eventTargetMode === "new") {
+        const eventRef = await addDoc(collection(db, "events"), {
+          name: newEventName.trim(),
+          createdAt: serverTimestamp(),
+        });
+        targetEventId = eventRef.id;
+      }
+
       const chunkSize = 400;
       for (let i = 0; i < readyRows.length; i += chunkSize) {
         const batch = writeBatch(db);
         const slice = readyRows.slice(i, i + chunkSize);
         for (const r of slice) {
-          const guestRef = doc(collection(db, "events", importTargetId, "guests"));
+          const guestRef = doc(collection(db, "events", targetEventId, "guests"));
           batch.set(guestRef, {
             name: r.name,
             tickets: r.tickets ?? 1,
@@ -135,13 +243,46 @@ export function SettingsCsvImport({ eventId }: Props) {
         }
         await batch.commit();
       }
-      router.push(`/?event=${encodeURIComponent(importTargetId)}`);
+      router.push(`/?event=${encodeURIComponent(targetEventId)}`);
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : "Import failed.");
     } finally {
       setBusy(false);
     }
-  }, [importTargetId, csvMatrix, readyRows, router]);
+  }, [
+    eventTargetMode,
+    newEventName,
+    importTargetId,
+    exportFieldsReady,
+    csvMatrix,
+    readyRows,
+    router,
+  ]);
+
+  const importBlockedReason = useMemo(() => {
+    if (busy) return null;
+    if (!exportFieldsReady) {
+      return 'Confirm the three export fields below, then click "Continue to upload CSV".';
+    }
+    if (eventTargetMode === "new") {
+      if (!newEventName.trim()) return "Enter an event name above (this names the new event for your import).";
+    } else {
+      if (!importTargetId.trim()) return "Select an existing event in the dropdown, or switch to Create new event.";
+      if (events.length === 0) return "No events yet—use Create new event and type an event name.";
+    }
+    if (!csvMatrix) return "Upload your orders CSV file.";
+    if (readyRows.length === 0) return "Preview has no valid rows—check headers and data.";
+    return null;
+  }, [
+    busy,
+    exportFieldsReady,
+    eventTargetMode,
+    newEventName,
+    importTargetId,
+    events.length,
+    csvMatrix,
+    readyRows.length,
+  ]);
 
   if (!isFirebaseConfigured()) {
     return (
@@ -159,112 +300,225 @@ export function SettingsCsvImport({ eventId }: Props) {
       <div className="flex items-center justify-between gap-3">
         <h1 className="text-xl font-semibold text-white">CSV import</h1>
         <Link
-          href={importTargetId ? `/?event=${encodeURIComponent(importTargetId)}` : "/"}
+          href={
+            eventTargetMode === "existing" && importTargetId
+              ? `/?event=${encodeURIComponent(importTargetId)}`
+              : "/"
+          }
           className="text-sm text-zinc-400 underline-offset-2 hover:text-white hover:underline"
         >
           Guestlist
         </Link>
       </div>
 
-      <div className="mt-4">
-        <label htmlFor="import-event" className="text-sm font-medium text-zinc-300">
-          Import into event
-        </label>
-        {events.length === 0 ? (
-          <p className="mt-2 text-sm text-amber-200/90">
-            No events yet. Add one from the guestlist <span className="text-zinc-400">(Settings drawer → New event)</span>
-            , then return here.
+      <div className="mt-6 rounded-xl border border-zinc-800 bg-zinc-950/50 p-4">
+        <h2 className="text-sm font-semibold text-white">Event for this import</h2>
+        <p className="mt-1 text-xs text-zinc-500">
+          Name a new event to hold this import, or add guests to an event that already exists.
+        </p>
+        <fieldset className="mt-3 space-y-2 border-0 p-0">
+          <legend className="sr-only">Import target</legend>
+          <label className="flex cursor-pointer items-start gap-2 text-sm text-zinc-200">
+            <input
+              type="radio"
+              name="event-target"
+              className="mt-0.5"
+              checked={eventTargetMode === "existing"}
+              onChange={() => setEventTargetMode("existing")}
+            />
+            <span>Add guests to an existing event</span>
+          </label>
+          <label className="flex cursor-pointer items-start gap-2 text-sm text-zinc-200">
+            <input
+              type="radio"
+              name="event-target"
+              className="mt-0.5"
+              checked={eventTargetMode === "new"}
+              onChange={() => setEventTargetMode("new")}
+            />
+            <span>Create new event and import into it</span>
+          </label>
+        </fieldset>
+
+        {eventTargetMode === "new" ? (
+          <div className="mt-3">
+            <label htmlFor="new-event-name" className="text-sm font-medium text-zinc-300">
+              Event name
+            </label>
+            <input
+              id="new-event-name"
+              value={newEventName}
+              onChange={(e) => setNewEventName(e.target.value)}
+              placeholder="e.g. Spring party door list"
+              className="mt-2 w-full rounded-lg border border-zinc-600 bg-zinc-950 px-3 py-2.5 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-zinc-400"
+              autoComplete="off"
+            />
+            <p className="mt-1.5 text-xs text-zinc-500">This name appears in the guestlist header after import.</p>
+          </div>
+        ) : events.length === 0 ? (
+          <p className="mt-3 text-sm text-amber-200/90">
+            You have no events yet. Choose <span className="text-amber-100">Create new event</span> and enter an
+            event name, or add an event from the guestlist drawer first.
           </p>
         ) : (
-          <select
-            id="import-event"
-            value={importTargetId}
-            onChange={(e) => setImportTargetId(e.target.value)}
-            className="mt-2 w-full rounded-lg border border-zinc-600 bg-zinc-950 px-3 py-2.5 text-sm text-white outline-none focus:border-zinc-400"
-          >
-            <option value="">Select an event…</option>
-            {events.map((ev) => (
-              <option key={ev.id} value={ev.id}>
-                {ev.name}
-              </option>
-            ))}
-          </select>
+          <div className="mt-3">
+            <label htmlFor="import-event" className="text-sm font-medium text-zinc-300">
+              Existing event
+            </label>
+            <select
+              id="import-event"
+              value={importTargetId}
+              onChange={(e) => setImportTargetId(e.target.value)}
+              className="mt-2 w-full rounded-lg border border-zinc-600 bg-zinc-950 px-3 py-2.5 text-sm text-white outline-none focus:border-zinc-400"
+            >
+              <option value="">Select an event…</option>
+              {events.map((ev) => (
+                <option key={ev.id} value={ev.id}>
+                  {ev.name}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1.5 text-xs text-zinc-500">New guests from the CSV are appended to this event.</p>
+          </div>
         )}
       </div>
 
-      {importTargetId ? (
-        <p className="mt-3 text-sm text-zinc-500">New guests are appended to this event.</p>
-      ) : null}
+      <section className="mt-8 rounded-xl border border-zinc-800 bg-zinc-950/50 p-4">
+        <h2 className="text-sm font-semibold text-white">1. Select export fields</h2>
+        <p className="mt-1 text-xs text-zinc-500">
+          Match your WooCommerce order export: turn on each column you use, and make the text match your CSV header
+          row (e.g. <span className="text-zinc-400">Total items</span> for ticket quantity).
+        </p>
 
-      <section className="mt-8">
-        <p className="text-xs text-zinc-500">
-          WooCommerce exports: <span className="text-zinc-400">Full Name (Billing)</span>,{" "}
-          <span className="text-zinc-400">Order Total Amount</span>, optional{" "}
-          <span className="text-zinc-400">Total products</span>. When many rows share the same implied price per product
-          (e.g. 95 kr), we use that as the ticket price and set tickets to at least{" "}
-          <span className="text-zinc-400">max(total products, order total ÷ that price)</span> so 285 kr → 3 tickets at
-          95 kr.
+        <ul className="mt-4 flex flex-col gap-2">
+          <li className="flex flex-wrap items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900/80 px-3 py-2.5 sm:flex-nowrap">
+            <span className="w-full shrink-0 text-sm text-zinc-300 sm:w-52">Full Name (Billing)</span>
+            <input
+              value={nameHeader}
+              onChange={(e) => setNameHeader(e.target.value)}
+              className="min-w-0 flex-1 rounded border border-zinc-600 bg-zinc-950 px-2 py-1.5 text-sm text-white outline-none focus:border-zinc-400"
+              aria-label="CSV header for guest name"
+            />
+            <span className="shrink-0 text-xs text-zinc-500">Required</span>
+            <button
+              type="button"
+              className="shrink-0 rounded p-1.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+              title="Reset to default"
+              onClick={() => setNameHeader("Full Name (Billing)")}
+            >
+              <TrashIcon />
+            </button>
+          </li>
+
+          <li className="flex flex-wrap items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900/80 px-3 py-2.5 sm:flex-nowrap">
+            <span className="w-full shrink-0 text-sm text-zinc-300 sm:w-52">Order Total Amount</span>
+            <input
+              value={amountHeader}
+              onChange={(e) => setAmountHeader(e.target.value)}
+              disabled={!useOrderTotal}
+              className="min-w-0 flex-1 rounded border border-zinc-600 bg-zinc-950 px-2 py-1.5 text-sm text-white outline-none focus:border-zinc-400 disabled:opacity-40"
+              aria-label="CSV header for order total"
+            />
+            <input
+              type="checkbox"
+              checked={useOrderTotal}
+              onChange={(e) => setUseOrderTotal(e.target.checked)}
+              className="h-4 w-4 shrink-0 rounded border-zinc-500"
+              title="Include order total"
+              aria-label="Include order total column"
+            />
+            <button
+              type="button"
+              className="shrink-0 rounded p-1.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+              title="Clear and turn off"
+              onClick={() => {
+                setAmountHeader("Order Total Amount");
+                setUseOrderTotal(false);
+              }}
+            >
+              <TrashIcon />
+            </button>
+          </li>
+
+          <li className="flex flex-wrap items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900/80 px-3 py-2.5 sm:flex-nowrap">
+            <span className="w-full shrink-0 text-sm text-zinc-300 sm:w-52">Total items</span>
+            <input
+              value={itemsHeader}
+              onChange={(e) => setItemsHeader(e.target.value)}
+              disabled={!useTotalItems}
+              className="min-w-0 flex-1 rounded border border-zinc-600 bg-zinc-950 px-2 py-1.5 text-sm text-white outline-none focus:border-zinc-400 disabled:opacity-40"
+              aria-label="CSV header for total items"
+            />
+            <input
+              type="checkbox"
+              checked={useTotalItems}
+              onChange={(e) => setUseTotalItems(e.target.checked)}
+              className="h-4 w-4 shrink-0 rounded border-zinc-500"
+              title="Import ticket count from this column"
+              aria-label="Include total items column"
+            />
+            <button
+              type="button"
+              className="shrink-0 rounded p-1.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+              title="Clear and turn off"
+              onClick={() => {
+                setItemsHeader("Total items");
+                setUseTotalItems(false);
+              }}
+            >
+              <TrashIcon />
+            </button>
+          </li>
+        </ul>
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          {!exportFieldsReady ? (
+            <button
+              type="button"
+              onClick={confirmExportFields}
+              className="rounded-lg bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-white"
+            >
+              Continue to upload CSV
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={resetExportFieldsStep}
+              className="rounded-lg border border-zinc-600 px-4 py-2 text-sm text-zinc-300 hover:border-zinc-500"
+            >
+              Change export fields
+            </button>
+          )}
+        </div>
+      </section>
+
+      <section className={`mt-8 ${exportFieldsReady ? "" : "pointer-events-none opacity-40"}`}>
+        <h2 className="text-sm font-semibold text-white">2. Upload CSV</h2>
+        <p className="mt-1 text-xs text-zinc-500">
+          File must include the headers you confirmed above. Same format as WooCommerce orders export with Total
+          items.
         </p>
         <input
+          key={fileInputKey}
           type="file"
           accept=".csv,text/csv"
-          className="mt-3 block w-full text-sm text-zinc-400 file:mr-3 file:rounded-lg file:border file:border-zinc-600 file:bg-zinc-900 file:px-3 file:py-2 file:text-sm file:text-zinc-200 hover:file:border-zinc-500"
+          disabled={!exportFieldsReady}
+          className="mt-3 block w-full text-sm text-zinc-400 file:mr-3 file:rounded-lg file:border file:border-zinc-600 file:bg-zinc-900 file:px-3 file:py-2 file:text-sm file:text-zinc-200 hover:file:border-zinc-500 disabled:opacity-50"
           onChange={(e) => onFile(e.target.files?.[0] ?? null)}
         />
         {parseError ? <p className="mt-2 text-sm text-red-400">{parseError}</p> : null}
 
         {csvMatrix && headers.length > 0 ? (
-          <div className="mt-4 space-y-3 rounded-lg border border-zinc-800 bg-zinc-950/80 p-3">
-            <p className="text-xs text-zinc-500">Map columns</p>
-            <div className="grid gap-3 sm:grid-cols-3">
-              <label className="flex flex-col gap-1 text-xs text-zinc-400">
-                Name
-                <select
-                  value={nameCol}
-                  onChange={(e) => setNameCol(Number(e.target.value))}
-                  className="rounded border border-zinc-600 bg-zinc-900 px-2 py-1.5 text-sm text-white"
-                >
-                  {headers.map((h, i) => (
-                    <option key={`n-${i}`} value={i}>
-                      {h || `(column ${i + 1})`}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="flex flex-col gap-1 text-xs text-zinc-400">
-                Order total
-                <select
-                  value={amountCol}
-                  onChange={(e) => setAmountCol(Number(e.target.value))}
-                  className="rounded border border-zinc-600 bg-zinc-900 px-2 py-1.5 text-sm text-white"
-                >
-                  {headers.map((h, i) => (
-                    <option key={`a-${i}`} value={i}>
-                      {h || `(column ${i + 1})`}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="flex flex-col gap-1 text-xs text-zinc-400">
-                Tickets (total products)
-                <select
-                  value={ticketsCol === "" ? "" : String(ticketsCol)}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setTicketsCol(v === "" ? "" : Number(v));
-                  }}
-                  className="rounded border border-zinc-600 bg-zinc-900 px-2 py-1.5 text-sm text-white"
-                >
-                  <option value="">None (assume 1 ticket when order total is positive)</option>
-                  {headers.map((h, i) => (
-                    <option key={`t-${i}`} value={i}>
-                      {h || `(column ${i + 1})`}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-          </div>
+          <p className="mt-3 text-xs text-zinc-500">
+            Using columns: <span className="text-zinc-300">{headers[nameCol] || `#${nameCol + 1}`}</span>,{" "}
+            <span className="text-zinc-300">{headers[amountCol] || `#${amountCol + 1}`}</span>
+            {useTotalItems && ticketsCol !== "" ? (
+              <>
+                , <span className="text-zinc-300">{headers[ticketsCol as number]}</span>
+              </>
+            ) : null}
+            .
+          </p>
         ) : null}
 
         {previewRows.length > 0 ? (
@@ -311,19 +565,28 @@ export function SettingsCsvImport({ eventId }: Props) {
       <div className="mt-8 flex flex-col gap-3 border-t border-zinc-800 pt-6 sm:flex-row sm:items-center">
         <button
           type="button"
-          disabled={busy || !importTargetId.trim() || events.length === 0}
+          disabled={Boolean(importBlockedReason)}
           onClick={submit}
           className="rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {busy ? "Importing…" : "Import guests"}
         </button>
         <Link
-          href={importTargetId ? `/?event=${encodeURIComponent(importTargetId)}` : "/"}
+          href={
+            eventTargetMode === "existing" && importTargetId
+              ? `/?event=${encodeURIComponent(importTargetId)}`
+              : "/"
+          }
           className="text-center text-sm text-zinc-500 hover:text-zinc-300 sm:text-left"
         >
           Cancel
         </Link>
       </div>
+      {importBlockedReason ? (
+        <p className="mt-2 text-sm text-amber-200/90">{importBlockedReason}</p>
+      ) : (
+        <p className="mt-2 text-sm text-zinc-500">Import is ready—click Import guests.</p>
+      )}
     </main>
   );
 }
