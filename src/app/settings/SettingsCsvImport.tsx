@@ -12,11 +12,13 @@ import { getDb } from "@/lib/firestore";
 import {
   addDoc,
   collection,
+  deleteDoc,
   doc,
   onSnapshot,
   orderBy,
   query,
   serverTimestamp,
+  updateDoc,
   writeBatch,
 } from "firebase/firestore";
 import Link from "next/link";
@@ -26,6 +28,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 type Props = { eventId: string };
 
 type EventOption = { id: string; name: string };
+type ManageGuestRow = {
+  id: string;
+  name: string;
+  amountPaidKr: string;
+};
 
 function TrashIcon({ className }: { className?: string }) {
   return (
@@ -65,11 +72,37 @@ export function SettingsCsvImport({ eventId }: Props) {
   const [ticketsCol, setTicketsCol] = useState<number | "">("");
   const [busy, setBusy] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [manualEventId, setManualEventId] = useState("");
+  const [manualFirstName, setManualFirstName] = useState("");
+  const [manualLastName, setManualLastName] = useState("");
+  const [manualTicketAmount, setManualTicketAmount] = useState("1");
+  const [manualBusy, setManualBusy] = useState(false);
+  const [manualError, setManualError] = useState<string | null>(null);
+  const [manualSuccess, setManualSuccess] = useState<string | null>(null);
+  const [manageEventId, setManageEventId] = useState("");
+  const [manageSearch, setManageSearch] = useState("");
+  const [manageGuests, setManageGuests] = useState<ManageGuestRow[]>([]);
+  const [manageBusyId, setManageBusyId] = useState<string | null>(null);
+  const [manageLoading, setManageLoading] = useState(false);
+  const [manageError, setManageError] = useState<string | null>(null);
+  const [manageSuccess, setManageSuccess] = useState<string | null>(null);
 
   useEffect(() => {
     const fromUrl = eventId.trim();
     if (!fromUrl) return;
     queueMicrotask(() => setImportTargetId(fromUrl));
+  }, [eventId]);
+
+  useEffect(() => {
+    const fromUrl = eventId.trim();
+    if (!fromUrl) return;
+    queueMicrotask(() => setManualEventId(fromUrl));
+  }, [eventId]);
+
+  useEffect(() => {
+    const fromUrl = eventId.trim();
+    if (!fromUrl) return;
+    queueMicrotask(() => setManageEventId(fromUrl));
   }, [eventId]);
 
   useEffect(() => {
@@ -93,6 +126,52 @@ export function SettingsCsvImport({ eventId }: Props) {
     const id = events[0]!.id;
     queueMicrotask(() => setImportTargetId(id));
   }, [events, importTargetId, eventTargetMode]);
+
+  useEffect(() => {
+    if (manualEventId.trim() || events.length !== 1) return;
+    const id = events[0]!.id;
+    queueMicrotask(() => setManualEventId(id));
+  }, [events, manualEventId]);
+
+  useEffect(() => {
+    if (manageEventId.trim() || events.length !== 1) return;
+    const id = events[0]!.id;
+    queueMicrotask(() => setManageEventId(id));
+  }, [events, manageEventId]);
+
+  useEffect(() => {
+    if (!isFirebaseConfigured() || !manageEventId.trim()) {
+      setManageGuests([]);
+      setManageLoading(false);
+      return;
+    }
+    setManageLoading(true);
+    setManageError(null);
+    const db = getDb();
+    const q = query(collection(db, "events", manageEventId, "guests"), orderBy("name"));
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const rows: ManageGuestRow[] = [];
+        snap.forEach((d) => {
+          const data = d.data();
+          const name = typeof data.name === "string" ? data.name : "";
+          const amount =
+            typeof data.amountPaidKr === "number" && Number.isFinite(data.amountPaidKr)
+              ? String(data.amountPaidKr)
+              : "";
+          rows.push({ id: d.id, name, amountPaidKr: amount });
+        });
+        setManageGuests(rows);
+        setManageLoading(false);
+      },
+      (err) => {
+        setManageError(err.message);
+        setManageLoading(false);
+      },
+    );
+    return () => unsub();
+  }, [manageEventId]);
 
   useEffect(() => {
     if (events.length > 0) return;
@@ -259,6 +338,128 @@ export function SettingsCsvImport({ eventId }: Props) {
     router,
   ]);
 
+  const addManualGuest = useCallback(async () => {
+    setManualError(null);
+    setManualSuccess(null);
+    const firstName = manualFirstName.trim();
+    const lastName = manualLastName.trim();
+    const selectedEventId = manualEventId.trim();
+    const ticketAmount = Math.floor(Number(manualTicketAmount));
+    if (!selectedEventId) {
+      setManualError("Select an event to add the guest to.");
+      return;
+    }
+    if (!firstName) {
+      setManualError("First name is required.");
+      return;
+    }
+    if (!lastName) {
+      setManualError("Last name is required.");
+      return;
+    }
+    if (!Number.isFinite(ticketAmount) || ticketAmount < 1) {
+      setManualError("Ticket amount must be at least 1.");
+      return;
+    }
+    if (!isFirebaseConfigured()) {
+      setManualError("Firebase is not configured.");
+      return;
+    }
+
+    setManualBusy(true);
+    try {
+      const db = getDb();
+      await addDoc(collection(db, "events", selectedEventId, "guests"), {
+        name: `${firstName} ${lastName}`.trim(),
+        tickets: ticketAmount,
+        amountPaidKr: null,
+        checkedIn: false,
+        createdAt: serverTimestamp(),
+      });
+      setManualFirstName("");
+      setManualLastName("");
+      setManualTicketAmount("1");
+      setManualSuccess("Guest added.");
+    } catch (e) {
+      setManualError(e instanceof Error ? e.message : "Failed to add guest.");
+    } finally {
+      setManualBusy(false);
+    }
+  }, [manualEventId, manualFirstName, manualLastName, manualTicketAmount]);
+
+  const updateManageGuestField = useCallback(
+    (guestId: string, key: "name" | "amountPaidKr", value: string) => {
+      setManageGuests((prev) => prev.map((g) => (g.id === guestId ? { ...g, [key]: value } : g)));
+    },
+    [],
+  );
+
+  const saveManagedGuest = useCallback(
+    async (guest: ManageGuestRow) => {
+      setManageError(null);
+      setManageSuccess(null);
+      if (!manageEventId.trim()) {
+        setManageError("Select an event first.");
+        return;
+      }
+      const nextName = guest.name.trim();
+      if (!nextName) {
+        setManageError("Name cannot be empty.");
+        return;
+      }
+      const amountRaw = guest.amountPaidKr.trim();
+      const parsedAmount = amountRaw === "" ? null : Number(amountRaw);
+      if (parsedAmount != null && (!Number.isFinite(parsedAmount) || parsedAmount < 0)) {
+        setManageError("Ticket price must be a valid number (0 or higher).");
+        return;
+      }
+
+      setManageBusyId(guest.id);
+      try {
+        const db = getDb();
+        await updateDoc(doc(db, "events", manageEventId, "guests", guest.id), {
+          name: nextName,
+          amountPaidKr: parsedAmount,
+        });
+        setManageSuccess("Guest updated.");
+      } catch (e) {
+        setManageError(e instanceof Error ? e.message : "Failed to update guest.");
+      } finally {
+        setManageBusyId(null);
+      }
+    },
+    [manageEventId],
+  );
+
+  const removeManagedGuest = useCallback(
+    async (guestId: string) => {
+      setManageError(null);
+      setManageSuccess(null);
+      if (!manageEventId.trim()) {
+        setManageError("Select an event first.");
+        return;
+      }
+      setManageBusyId(guestId);
+      try {
+        const db = getDb();
+        await deleteDoc(doc(db, "events", manageEventId, "guests", guestId));
+        setManageSuccess("Guest removed from the list.");
+      } catch (e) {
+        setManageError(e instanceof Error ? e.message : "Failed to remove guest.");
+      } finally {
+        setManageBusyId(null);
+      }
+    },
+    [manageEventId],
+  );
+
+  const displayedManageGuests = useMemo(() => {
+    const q = manageSearch.trim().toLowerCase();
+    if (!q) return [];
+    const firstMatch = manageGuests.find((g) => g.name.toLowerCase().includes(q));
+    return firstMatch ? [firstMatch] : [];
+  }, [manageGuests, manageSearch]);
+
   const importBlockedReason = useMemo(() => {
     if (busy) return null;
     if (!exportFieldsReady) {
@@ -298,7 +499,7 @@ export function SettingsCsvImport({ eventId }: Props) {
   return (
     <main className="mx-auto min-h-full w-full max-w-xl bg-black px-4 py-8 text-zinc-100 sm:px-6">
       <div className="flex items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold text-white">CSV import</h1>
+        <h1 className="text-xl font-semibold text-white">Settings</h1>
         <Link
           href={
             eventTargetMode === "existing" && importTargetId
@@ -311,7 +512,209 @@ export function SettingsCsvImport({ eventId }: Props) {
         </Link>
       </div>
 
-      <div className="mt-6 rounded-xl border border-zinc-800 bg-zinc-950/50 p-4">
+      <section className="mt-8 rounded-xl border border-zinc-800 bg-zinc-950/50 p-4">
+        <h2 className="text-base font-semibold text-white">Guest actions</h2>
+        <p className="mt-1 text-xs text-zinc-500">Add, search, edit, or remove guests for any event.</p>
+      </section>
+
+      <section className="mt-4 rounded-xl border border-zinc-800 bg-zinc-950/50 p-4">
+        <h2 className="text-sm font-semibold text-white">Manual add guest</h2>
+        <p className="mt-1 text-xs text-zinc-500">
+          Pick an event, then add first name, last name, and ticket amount.
+        </p>
+        {events.length === 0 ? (
+          <p className="mt-3 text-sm text-amber-200/90">No events available yet. Create an event first.</p>
+        ) : (
+          <>
+            <div className="mt-3">
+              <label htmlFor="manual-event" className="text-sm font-medium text-zinc-300">
+                Event
+              </label>
+              <select
+                id="manual-event"
+                value={manualEventId}
+                onChange={(e) => setManualEventId(e.target.value)}
+                className="mt-2 w-full rounded-lg border border-zinc-600 bg-zinc-950 px-3 py-2.5 text-sm text-white outline-none focus:border-zinc-400"
+              >
+                <option value="">Select an event…</option>
+                {events.map((ev) => (
+                  <option key={ev.id} value={ev.id}>
+                    {ev.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <div>
+                <label htmlFor="manual-first-name" className="text-sm font-medium text-zinc-300">
+                  First name
+                </label>
+                <input
+                  id="manual-first-name"
+                  value={manualFirstName}
+                  onChange={(e) => setManualFirstName(e.target.value)}
+                  placeholder="First name"
+                  className="mt-2 w-full rounded-lg border border-zinc-600 bg-zinc-950 px-3 py-2.5 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-zinc-400"
+                  autoComplete="off"
+                />
+              </div>
+              <div>
+                <label htmlFor="manual-last-name" className="text-sm font-medium text-zinc-300">
+                  Last name
+                </label>
+                <input
+                  id="manual-last-name"
+                  value={manualLastName}
+                  onChange={(e) => setManualLastName(e.target.value)}
+                  placeholder="Last name"
+                  className="mt-2 w-full rounded-lg border border-zinc-600 bg-zinc-950 px-3 py-2.5 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-zinc-400"
+                  autoComplete="off"
+                />
+              </div>
+            </div>
+            <div className="mt-3 max-w-[12rem]">
+              <label htmlFor="manual-ticket-amount" className="text-sm font-medium text-zinc-300">
+                Ticket amount
+              </label>
+              <input
+                id="manual-ticket-amount"
+                type="number"
+                min={1}
+                step={1}
+                value={manualTicketAmount}
+                onChange={(e) => setManualTicketAmount(e.target.value)}
+                className="mt-2 w-full rounded-lg border border-zinc-600 bg-zinc-950 px-3 py-2.5 text-sm text-white outline-none focus:border-zinc-400"
+              />
+            </div>
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={addManualGuest}
+                disabled={manualBusy}
+                className="rounded-lg border border-[#F16CB3] bg-[#F16CB3] px-4 py-2 text-sm font-medium text-white transition hover:bg-[#e055a5] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {manualBusy ? "Adding…" : "Add guest"}
+              </button>
+              {manualSuccess ? <p className="text-sm text-emerald-300">{manualSuccess}</p> : null}
+            </div>
+            {manualError ? <p className="mt-2 text-sm text-red-400">{manualError}</p> : null}
+          </>
+        )}
+      </section>
+
+      <section className="mt-4 rounded-xl border border-zinc-800 bg-zinc-950/50 p-4">
+        <h2 className="text-sm font-semibold text-white">Manage guests</h2>
+        <p className="mt-1 text-xs text-zinc-500">
+          Search a person, then edit name or ticket price, or remove them from the list.
+        </p>
+        {events.length === 0 ? (
+          <p className="mt-3 text-sm text-amber-200/90">No events available yet. Create an event first.</p>
+        ) : (
+          <>
+            <div className="mt-3">
+              <label htmlFor="manage-event" className="text-sm font-medium text-zinc-300">
+                Event
+              </label>
+              <select
+                id="manage-event"
+                value={manageEventId}
+                onChange={(e) => setManageEventId(e.target.value)}
+                className="mt-2 w-full rounded-lg border border-zinc-600 bg-zinc-950 px-3 py-2.5 text-sm text-white outline-none focus:border-zinc-400"
+              >
+                <option value="">Select an event…</option>
+                {events.map((ev) => (
+                  <option key={ev.id} value={ev.id}>
+                    {ev.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="mt-3">
+              <label htmlFor="manage-search" className="text-sm font-medium text-zinc-300">
+                Search guest
+              </label>
+              <input
+                id="manage-search"
+                type="search"
+                value={manageSearch}
+                onChange={(e) => setManageSearch(e.target.value)}
+                placeholder="Type a name..."
+                className="mt-2 w-full rounded-lg border border-zinc-600 bg-zinc-950 px-3 py-2.5 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-zinc-400"
+                autoComplete="off"
+              />
+            </div>
+
+            {manageLoading ? (
+              <p className="mt-4 text-sm text-zinc-500">Loading guests…</p>
+            ) : !manageSearch.trim() ? (
+              <p className="mt-4 text-sm text-zinc-500">Search for a person to manage their details.</p>
+            ) : displayedManageGuests.length === 0 ? (
+              <p className="mt-4 text-sm text-zinc-500">{manageGuests.length === 0 ? "No guests in this event yet." : "No person found"}</p>
+            ) : (
+              <ul className="mt-4 space-y-3">
+                {displayedManageGuests.map((guest) => (
+                  <li key={guest.id} className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3">
+                    <div className="grid gap-3 sm:grid-cols-[1.5fr_1fr]">
+                      <div>
+                        <label htmlFor={`guest-name-${guest.id}`} className="text-xs text-zinc-400">
+                          Name
+                        </label>
+                        <input
+                          id={`guest-name-${guest.id}`}
+                          value={guest.name}
+                          onChange={(e) => updateManageGuestField(guest.id, "name", e.target.value)}
+                          className="mt-1 w-full rounded-lg border border-zinc-600 bg-zinc-950 px-3 py-2 text-sm text-white outline-none focus:border-zinc-400"
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor={`guest-price-${guest.id}`} className="text-xs text-zinc-400">
+                          Ticket price (kr)
+                        </label>
+                        <input
+                          id={`guest-price-${guest.id}`}
+                          type="number"
+                          min={0}
+                          step="any"
+                          value={guest.amountPaidKr}
+                          onChange={(e) => updateManageGuestField(guest.id, "amountPaidKr", e.target.value)}
+                          className="mt-1 w-full rounded-lg border border-zinc-600 bg-zinc-950 px-3 py-2 text-sm text-white outline-none focus:border-zinc-400"
+                        />
+                      </div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => saveManagedGuest(guest)}
+                        disabled={manageBusyId === guest.id}
+                        className="rounded-lg border border-[#F16CB3] bg-[#F16CB3] px-3 py-1.5 text-sm font-medium text-white transition hover:bg-[#e055a5] disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {manageBusyId === guest.id ? "Saving…" : "Save changes"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => removeManagedGuest(guest.id)}
+                        disabled={manageBusyId === guest.id}
+                        className="rounded-lg border border-zinc-600 px-3 py-1.5 text-sm text-zinc-200 transition hover:border-red-400 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Remove from list
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {manageError ? <p className="mt-3 text-sm text-red-400">{manageError}</p> : null}
+            {manageSuccess ? <p className="mt-3 text-sm text-emerald-300">{manageSuccess}</p> : null}
+          </>
+        )}
+      </section>
+
+      <section className="mt-8 rounded-xl border border-zinc-800 bg-zinc-950/50 p-4">
+        <h2 className="text-base font-semibold text-white">CSV import actions</h2>
+        <p className="mt-1 text-xs text-zinc-500">Set import target, map CSV columns, preview, and import guests.</p>
+      </section>
+
+      <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-950/50 p-4">
         <h2 className="text-sm font-semibold text-white">Event for this import</h2>
         <p className="mt-1 text-xs text-zinc-500">
           Name a new event to hold this import, or add guests to an event that already exists.
@@ -383,7 +786,7 @@ export function SettingsCsvImport({ eventId }: Props) {
         )}
       </div>
 
-      <section className="mt-8 rounded-xl border border-zinc-800 bg-zinc-950/50 p-4">
+      <section className="mt-4 rounded-xl border border-zinc-800 bg-zinc-950/50 p-4">
         <h2 className="text-sm font-semibold text-white">1. Select export fields</h2>
         <p className="mt-1 text-xs text-zinc-500">
           Match your WooCommerce order export: turn on each column you use, and make the text match your CSV header
