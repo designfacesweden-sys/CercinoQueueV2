@@ -288,7 +288,7 @@ export function SettingsCsvImport({ eventId }: Props) {
     return (
       <main className="mx-auto min-h-full w-full max-w-lg bg-black px-4 py-10 text-zinc-200">
         <p className="text-sm text-zinc-400">Configure Firebase in .env.local to import.</p>
-        <Link href="/" className="mt-4 inline-block text-sm text-violet-400">
+        <Link href="/" prefetch={false} className="mt-4 inline-block text-sm text-[#F16CB3]">
           Back to guestlist
         </Link>
       </main>
@@ -567,7 +567,7 @@ export function SettingsCsvImport({ eventId }: Props) {
           type="button"
           disabled={Boolean(importBlockedReason)}
           onClick={submit}
-          className="rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-lg border border-[#F16CB3] bg-[#F16CB3] px-4 py-2.5 text-sm font-medium text-white transition hover:bg-[#e055a5] disabled:cursor-not-allowed disabled:opacity-50"
         >
           {busy ? "Importing…" : "Import guests"}
         </button>

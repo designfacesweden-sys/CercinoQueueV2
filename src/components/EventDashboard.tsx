@@ -1,6 +1,5 @@
 "use client";
 
-import { leaveSite } from "@/app/login/actions";
 import { isFirebaseConfigured } from "@/lib/firebase";
 import { getDb } from "@/lib/firestore";
 import {
@@ -30,26 +29,26 @@ type GuestRow = {
 
 type FilterTab = "unchecked" | "checked";
 
-/** Stats accent #9B66E4; toolbar buttons are outline-only (see outlineBtn). */
-const statNum = "font-semibold text-[#9B66E4]";
+/** Brand accent — stats + outlined controls */
+const statNum = "font-semibold text-[#F16CB3]";
 const statLabel = "text-zinc-400";
 
-/** Outline-only controls: light grey stroke, no fill, modest radius */
+/** Outline-only controls */
 const outlineBtn =
-  "rounded-md border border-zinc-500 bg-transparent py-2 text-sm font-medium text-white transition hover:border-zinc-400";
-const outlineBtnActive = "border-[#9B66E4] text-white";
+  "rounded-md border border-[#F16CB3] bg-transparent py-2 text-sm font-medium text-white transition hover:border-[#ff8cc8]";
+const outlineBtnActive = "border-[#F16CB3] text-[#F16CB3]";
 
 /** Filter: icon-only, same height as inline search */
 const toolbarIconBtn = `${outlineBtn} flex h-10 w-10 shrink-0 items-center justify-center p-0 text-white`;
 
 const searchInline =
-  "h-10 min-h-10 min-w-[10rem] flex-1 rounded-md border border-zinc-500 bg-transparent px-3 text-sm text-white outline-none placeholder:text-zinc-500 focus:border-zinc-400";
+  "h-10 min-h-10 min-w-[10rem] flex-1 rounded-md border border-[#F16CB3]/70 bg-transparent px-3 text-sm text-white outline-none placeholder:text-zinc-500 focus:border-[#F16CB3]";
 
 const settingsBtn =
-  "flex h-10 shrink-0 items-center gap-2 rounded-md border border-zinc-500 bg-transparent px-3.5 text-sm font-medium text-white transition hover:border-zinc-400";
+  "flex h-10 shrink-0 items-center gap-2 rounded-md border border-[#F16CB3] bg-transparent px-3.5 text-sm font-medium text-white transition hover:border-[#ff8cc8]";
 
 const eventSelectHeader =
-  "h-10 min-w-0 max-w-[min(240px,52vw)] cursor-pointer appearance-none rounded-md border border-zinc-500 bg-transparent py-0 pl-3 pr-9 text-left text-sm text-white outline-none transition focus:border-zinc-400 sm:max-w-xs";
+  "h-10 min-w-0 max-w-[min(240px,52vw)] cursor-pointer appearance-none rounded-md border border-[#F16CB3]/70 bg-transparent py-0 pl-3 pr-9 text-left text-sm text-white outline-none transition focus:border-[#F16CB3] sm:max-w-xs";
 
 function XMarkIcon({ className }: { className?: string }) {
   return (
@@ -257,11 +256,6 @@ export function EventDashboard() {
           and enable Firestore. Deploy <code className="font-mono text-xs">firestore.rules</code> from this repo in the Firebase
           console.
         </p>
-        <form action={leaveSite}>
-          <button type="submit" className="text-sm text-violet-600 dark:text-violet-400">
-            Leave
-          </button>
-        </form>
       </main>
     );
   }
@@ -279,7 +273,7 @@ export function EventDashboard() {
               id="header-event"
               className={eventSelectHeader}
               style={{
-                backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23a1a1aa'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E")`,
+                backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23F16CB3'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E")`,
                 backgroundRepeat: "no-repeat",
                 backgroundPosition: "right 0.6rem center",
                 backgroundSize: "1rem",
@@ -300,10 +294,11 @@ export function EventDashboard() {
             </select>
             <Link
               href={eventId ? `/settings?event=${encodeURIComponent(eventId)}` : "/settings"}
+              prefetch={false}
               className={settingsBtn}
               aria-label="Open CSV import"
             >
-              <SettingsIcon className="shrink-0 text-zinc-300" />
+              <SettingsIcon className="shrink-0 text-[#F16CB3]" />
               <span>Settings</span>
             </Link>
           </div>
@@ -387,9 +382,9 @@ export function EventDashboard() {
             {filtered.map((g) => (
               <li
                 key={g.id}
-                className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between"
+                className="flex flex-row items-center justify-between gap-3 py-4"
               >
-                <div>
+                <div className="min-w-0 flex-1">
                   <p className="font-medium text-white">{g.name}</p>
                   <p className="text-sm text-zinc-500">
                     {g.tickets} ticket{g.tickets === 1 ? "" : "s"}
@@ -402,7 +397,7 @@ export function EventDashboard() {
                       type="button"
                       disabled={busyId === g.id}
                       onClick={() => setCheckedIn(g.id, true)}
-                      className="rounded-md border border-violet-500 bg-transparent px-4 py-2 text-sm font-medium text-violet-300 transition hover:border-violet-400 disabled:opacity-50"
+                      className="rounded-md border border-[#F16CB3] bg-transparent px-4 py-2 text-sm font-medium text-[#F16CB3] transition hover:border-[#ff8cc8] hover:text-[#ff8cc8] disabled:opacity-50"
                     >
                       {busyId === g.id ? "…" : "Check in"}
                     </button>
@@ -412,7 +407,7 @@ export function EventDashboard() {
                       type="button"
                       disabled={busyId === g.id}
                       onClick={() => setCheckedIn(g.id, false)}
-                      className="rounded-md border border-zinc-500 bg-transparent px-4 py-2 text-sm text-zinc-200 transition hover:border-zinc-400"
+                      className="rounded-md border border-[#F16CB3]/80 bg-transparent px-4 py-2 text-sm text-[#F16CB3] transition hover:border-[#ff8cc8] hover:text-[#ff8cc8]"
                     >
                       {busyId === g.id ? "…" : "Undo check-in"}
                     </button>
@@ -471,7 +466,8 @@ export function EventDashboard() {
                 <p className="mt-1 text-xs text-zinc-500">Import a WooCommerce orders CSV for the event selected in the header.</p>
                 <Link
                   href={eventId ? `/settings?event=${encodeURIComponent(eventId)}` : "/settings"}
-                  className="mt-2 inline-flex w-full items-center justify-center rounded-lg border border-zinc-300 py-2 text-sm font-medium text-zinc-800 transition hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-100 dark:hover:bg-zinc-900"
+                  prefetch={false}
+                  className="mt-2 inline-flex w-full items-center justify-center rounded-lg border border-[#F16CB3] py-2 text-sm font-medium text-[#F16CB3] transition hover:bg-[#F16CB3]/10 dark:text-[#F16CB3]"
                   onClick={() => setSettingsOpen(false)}
                 >
                   CSV import
@@ -498,16 +494,11 @@ export function EventDashboard() {
                   type="button"
                   disabled={!eventId}
                   onClick={addGuest}
-                  className="mt-2 w-full rounded-lg bg-violet-600 py-2 text-sm font-medium text-white disabled:opacity-50"
+                  className="mt-2 w-full rounded-lg border border-[#F16CB3] bg-[#F16CB3] py-2 text-sm font-medium text-white transition hover:bg-[#e055a5] disabled:opacity-50"
                 >
                   Add guest
                 </button>
               </div>
-              <form action={leaveSite} className="mt-auto border-t border-zinc-200 pt-4 dark:border-zinc-800">
-                <button type="submit" className="w-full rounded-lg border border-zinc-300 py-2 text-sm dark:border-zinc-600">
-                  Log out
-                </button>
-              </form>
             </div>
           </div>
         </div>
